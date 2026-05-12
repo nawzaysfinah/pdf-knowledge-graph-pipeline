@@ -1,0 +1,26 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+.env.swp
+
+# Pipeline outputs (generated artifacts — not committed)
+output/
+pdfs/
+
+# Generated canonical data (contains local absolute paths)
+data/canonical/
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+*.swp

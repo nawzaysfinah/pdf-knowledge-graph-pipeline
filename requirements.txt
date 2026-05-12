@@ -1,0 +1,10 @@
+streamlit
+streamlit-agraph
+neo4j
+pandas
+pyyaml
+requests
+python-dotenv
+matplotlib
+tqdm
+pydantic

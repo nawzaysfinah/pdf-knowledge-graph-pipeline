@@ -1,0 +1,32 @@
+# Sample mapping for synthetic dataset in data/sample
+# Copy this file to mapping_config.yaml and adjust column names for agency CSVs in data/raw.
+
+documents:
+  file: "agency_documents.csv"
+  columns:
+    doc_id: "doc_ref"
+    title: "headline"
+    text: "body_text"
+    division: "division_name"
+    date: "filed_on"
+    doc_type: "doc_kind"
+    source_uri: "source_uri"
+
+divisions:
+  file: "agency_divisions.csv"
+  columns:
+    division_id: "div_code"
+    name: "division_label"
+
+initiatives:
+  file: "agency_initiatives.csv"
+  columns:
+    initiative_id: "init_code"
+    name: "initiative_name"
+    description: "initiative_desc"
+
+doc_initiatives:
+  file: "agency_doc_initiatives.csv"
+  columns:
+    doc_id: "doc_ref"
+    initiative_id: "init_code"

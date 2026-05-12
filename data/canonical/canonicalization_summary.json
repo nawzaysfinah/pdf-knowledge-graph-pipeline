@@ -1,0 +1,23 @@
+{
+  "timestamp": "2026-02-19T05:35:31.180264Z",
+  "metadata": {
+    "mapping_config_used": "/Users/syaz/Documents/work/repos/nea-kg-graph-rag-prototype/data/mapping/mapping_config.yaml",
+    "input_documents_file": "/Users/syaz/Documents/work/repos/nea-kg-graph-rag-prototype/data/sample/nea_documents.csv",
+    "documents_rows": 30,
+    "divisions_rows": 3,
+    "initiatives_rows": 6,
+    "doc_initiatives_rows": 36
+  },
+  "output_paths": {
+    "documents": "/Users/syaz/Documents/work/repos/nea-kg-graph-rag-prototype/data/canonical/canonical_documents.csv",
+    "divisions": "/Users/syaz/Documents/work/repos/nea-kg-graph-rag-prototype/data/canonical/canonical_divisions.csv",
+    "initiatives": "/Users/syaz/Documents/work/repos/nea-kg-graph-rag-prototype/data/canonical/canonical_initiatives.csv",
+    "doc_initiatives": "/Users/syaz/Documents/work/repos/nea-kg-graph-rag-prototype/data/canonical/canonical_doc_initiatives.csv"
+  },
+  "row_counts": {
+    "documents": 30,
+    "divisions": 3,
+    "initiatives": 6,
+    "doc_initiatives": 36
+  }
+}
