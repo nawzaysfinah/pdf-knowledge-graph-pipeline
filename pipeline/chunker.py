@@ -4,6 +4,9 @@ Splits extraction JSON content items into semantically coherent chunks:
   - Text items  → split at markdown headings, then paragraphs; 1-2 sentence overlap
   - Table items → always emitted as single atomic chunks
 
+Short consecutive text chunks (< MIN_CHUNK_CHARS) are merged so the LLM
+always has enough context to extract meaningful entities and relationships.
+
 Every chunk carries provenance:
   {chunk_id, chunk_index, doc_id, filename, page_num,
    section_heading, content_type}
@@ -21,6 +24,9 @@ from typing import Any, Generator
 
 # Matches markdown headings: # Heading, ## Heading, etc.
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)", re.MULTILINE)
+
+# Consecutive short text chunks below this size are merged together
+MIN_CHUNK_CHARS = 300
 
 # Sentence boundary: ends with . ! ? followed by whitespace or end-of-string.
 # Keeps the terminal punctuation with the sentence.
@@ -142,6 +148,40 @@ def _chunk_from_table_item(
 
 
 # ---------------------------------------------------------------------------
+# Short-chunk merger (Fix A)
+# ---------------------------------------------------------------------------
+
+def _merge_short_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge consecutive short text chunks into their successor.
+
+    Walks forward through the list. If the last emitted text chunk is still
+    below MIN_CHUNK_CHARS, the next text chunk is appended to it rather than
+    starting a new chunk. Tables are always kept atomic and never merged.
+    Chunk IDs and indices are re-assigned after merging.
+    """
+    result: list[dict[str, Any]] = []
+
+    for chunk in chunks:
+        if (
+            chunk["content_type"] == "text"
+            and result
+            and result[-1]["content_type"] == "text"
+            and len(result[-1]["text"]) < MIN_CHUNK_CHARS
+        ):
+            # Grow the previous chunk instead of starting a new one
+            result[-1]["text"] += "\n\n" + chunk["text"]
+        else:
+            result.append(dict(chunk))
+
+    # Re-assign stable IDs after merging
+    for idx, c in enumerate(result):
+        c["chunk_index"] = idx
+        c["chunk_id"] = _chunk_id(c["doc_id"], idx)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -159,7 +199,8 @@ def chunk_extraction(extraction: dict[str, Any]) -> list[dict[str, Any]]:
             all_chunks.extend(new_chunks)
             index += len(new_chunks)
 
-    return all_chunks
+    # Merge short text fragments so every chunk has enough context for the LLM
+    return _merge_short_chunks(all_chunks)
 
 
 def chunk_all(extractions_dir: Path, output_path: Path) -> list[dict[str, Any]]:

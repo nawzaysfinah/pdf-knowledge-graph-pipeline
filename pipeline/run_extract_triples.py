@@ -32,7 +32,7 @@ def main() -> None:
     ollama_url   = os.environ["OLLAMA_URL"]
     ollama_model = os.environ["OLLAMA_MODEL"]
 
-    client = OllamaClient(base_url=ollama_url, model=ollama_model, timeout_seconds=180)
+    client = OllamaClient(base_url=ollama_url, model=ollama_model, timeout_seconds=600)
 
     print(f"\n  Ollama URL   : {ollama_url}")
     print(f"  Model        : {ollama_model}")

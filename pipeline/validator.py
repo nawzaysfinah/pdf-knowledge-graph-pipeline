@@ -29,7 +29,7 @@ VALIDATED_PATH         = Path("output") / "validated_triples.jsonl"
 REPORT_PATH            = Path("output") / "validation_report.txt"
 ONTOLOGY_PATH          = Path("output") / "ontology.json"
 
-CONFIDENCE_THRESHOLD   = 0.7
+CONFIDENCE_THRESHOLD   = 0.5
 
 
 # ---------------------------------------------------------------------------
