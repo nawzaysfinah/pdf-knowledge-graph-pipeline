@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from requests.exceptions import ReadTimeout
+from requests.exceptions import ReadTimeout, HTTPError
 
 from src.llm.ollama_client import OllamaClient
 from pipeline.ontology import Ontology, load_ontology
@@ -33,7 +33,7 @@ EXTRACTIONS_PATH   = Path("output") / "extractions.jsonl"
 ONTOLOGY_PATH      = Path("output") / "ontology.json"
 CANONICAL_MAP_PATH = Path("output") / "canonical_map.json"
 
-MAX_RETRIES    = 3
+MAX_RETRIES    = 1
 RETRY_BASE_SEC = 2
 
 
@@ -164,7 +164,7 @@ def extract_chunk(
                 "triples":         parsed["triples"],
             }
 
-        except (json.JSONDecodeError, ValueError, KeyError, ReadTimeout) as exc:
+        except (json.JSONDecodeError, ValueError, KeyError, ReadTimeout, HTTPError) as exc:
             last_error = exc
             wait = RETRY_BASE_SEC ** attempt
             logger.warning(
@@ -264,6 +264,9 @@ def extract_all(
                 f"  errors={stats['errors']}",
                 end="", flush=True,
             )
+
+            # Brief pause to prevent Ollama from being overwhelmed
+            time.sleep(2)
 
     print()  # newline after progress line
     return stats
