@@ -1,10 +1,11 @@
-"""Evidence-first Graph-RAG chat page."""
+"""NEA Knowledge Graph — Chat Interface.
 
+Natural language → Cypher → grounded answer via local Ollama (qwen3:latest).
+"""
 from __future__ import annotations
 
-from pathlib import Path
-import json
 import sys
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -15,146 +16,199 @@ if str(ROOT) not in sys.path:
 
 from src.config import load_config
 from src.graph.neo4j_client import Neo4jClient
-from src.graph.queries import build_query_registry
-from src.llm.ollama_client import OllamaClient
-from src.llm.rag import GraphRAGEngine
+from src.llm.nl_to_cypher import NLToCypherEngine
 
+st.set_page_config(page_title="Ask the Knowledge Graph", layout="wide")
 
-st.set_page_config(page_title="Ask Anything", layout="wide")
 config = load_config()
 
 
 @st.cache_resource
-def get_graph_client() -> Neo4jClient:
-    return Neo4jClient(
+def get_engine() -> NLToCypherEngine:
+    client = Neo4jClient(
         uri=config.neo4j.uri,
         user=config.neo4j.user,
         password=config.neo4j.password,
         database=config.neo4j.database,
     )
+    return NLToCypherEngine(client, config.ollama.base_url)
 
 
-@st.cache_resource
-def get_ollama_client() -> OllamaClient:
-    return OllamaClient(config.ollama.base_url, config.ollama.model)
+# ---------------------------------------------------------------------------
+# Session state
+# ---------------------------------------------------------------------------
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []   # {role, content, cypher, results, error}
+
+if "history" not in st.session_state:
+    st.session_state.history = []    # {question, cypher, answer} for LLM context
 
 
-@st.cache_resource
-def get_engine() -> GraphRAGEngine:
-    return GraphRAGEngine(
-        graph_client=get_graph_client(),
-        ollama_client=get_ollama_client(),
-        query_registry=build_query_registry(),
-    )
+# ---------------------------------------------------------------------------
+# Sidebar
+# ---------------------------------------------------------------------------
 
+with st.sidebar:
+    st.title("NEA Knowledge Graph")
+    st.caption("Chat powered by qwen3:latest + Neo4j")
 
-st.title("Ask Anything")
-st.caption("Graph-RAG with strict evidence-first traceability")
+    if st.button("Clear conversation", use_container_width=True):
+        st.session_state.messages = []
+        st.session_state.history = []
+        st.rerun()
 
-if "chat_history" not in st.session_state:
-    st.session_state["chat_history"] = []
-if "last_evidence" not in st.session_state:
-    st.session_state["last_evidence"] = None
-if "last_question" not in st.session_state:
-    st.session_state["last_question"] = ""
-
-allow_inference = st.toggle("Allow bounded inference", value=False)
-
-st.subheader("Evidence")
-last_evidence = st.session_state.get("last_evidence")
-if last_evidence:
-    st.write(f"Query ID: `{last_evidence.get('query_id')}`")
-    st.write(f"Why these results: {last_evidence.get('why_these_results')}")
-    rows = last_evidence.get("rows", [])
-    nodes = last_evidence.get("nodes", [])
-    edges = last_evidence.get("edges", [])
-    documents = last_evidence.get("documents", [])
-
-    with st.expander("Evidence: Nodes", expanded=True):
-        st.dataframe(pd.DataFrame(nodes), use_container_width=True)
-    with st.expander("Evidence: Edges", expanded=True):
-        st.dataframe(pd.DataFrame(edges), use_container_width=True)
-    with st.expander("Evidence: Documents", expanded=True):
-        st.dataframe(pd.DataFrame(documents), use_container_width=True)
-    with st.expander("Evidence: Query Rows", expanded=True):
-        st.dataframe(pd.DataFrame(rows), use_container_width=True)
-
-    st.download_button(
-        label="Download evidence (JSON)",
-        data=json.dumps(last_evidence, indent=2),
-        file_name="evidence.json",
-        mime="application/json",
-    )
-else:
-    st.info("No evidence yet. Ask a question to retrieve graph-backed evidence.")
-
-question = st.text_input(
-    "Question",
-    placeholder="Example: Which initiatives are active across multiple divisions?",
-)
-
-if st.button("Ask") and question.strip():
+    st.divider()
+    st.markdown("**Graph stats**")
     try:
         engine = get_engine()
-        result = engine.ask(question=question.strip(), allow_bounded_inference=allow_inference)
-        evidence = result["evidence"]
-
-        st.session_state["last_question"] = question.strip()
-        st.session_state["last_evidence"] = evidence
-        st.session_state["chat_history"].append(
-            {
-                "question": question.strip(),
-                "answer": result["answer"],
-                "query_id": result["query_id"],
-                "evidence": evidence,
-            }
+        stats = engine.graph_client.run_query(
+            "MATCH (n) RETURN count(n) AS nodes "
+            "UNION ALL MATCH ()-[r]->() RETURN count(r) AS nodes"
         )
+        if len(stats) >= 2:
+            st.metric("Nodes", f"{stats[0]['nodes']:,}")
+            st.metric("Relationships", f"{stats[1]['nodes']:,}")
+    except Exception:
+        st.warning("Neo4j unreachable")
 
-        pairs = []
-        for row in evidence.get("rows", []):
-            a = row.get("topic_a")
-            b = row.get("topic_b")
-            if a and b:
-                pairs.append((a, b))
-        st.session_state["last_evidence_graph_pairs"] = pairs
-
-        st.rerun()
-    except Exception as exc:  # pragma: no cover - streamlit runtime
-        st.error(f"Failed to answer question: {exc}")
-
-if st.button("Regenerate narrative (same evidence)"):
-    evidence = st.session_state.get("last_evidence")
-    last_question = st.session_state.get("last_question", "")
-    if not evidence or not last_question:
-        st.warning("No prior evidence to regenerate from.")
-    else:
-        try:
-            engine = get_engine()
-            regenerated = engine.generate_answer_from_evidence(
-                question=last_question,
-                evidence=evidence,
-                allow_bounded_inference=allow_inference,
-            )
-            st.session_state["chat_history"].append(
-                {
-                    "question": last_question,
-                    "answer": regenerated,
-                    "query_id": evidence.get("query_id", ""),
-                    "evidence": evidence,
-                }
-            )
+    st.divider()
+    st.markdown("**Example questions**")
+    examples = [
+        "What programmes does NEA operate?",
+        "Who heads NEA?",
+        "Which organisations collaborate with NEA?",
+        "What pollutants are emitted and by whom?",
+        "What targets has NEA set for waste reduction?",
+        "Show me the most connected entities",
+        "Which facilities are located in Singapore?",
+    ]
+    for ex in examples:
+        if st.button(ex, use_container_width=True, key=f"ex_{ex[:20]}"):
+            st.session_state._prefill = ex
             st.rerun()
-        except Exception as exc:  # pragma: no cover - streamlit runtime
-            st.error(f"Regenerate failed: {exc}")
 
-st.divider()
-st.subheader("Chat History")
-if not st.session_state["chat_history"]:
-    st.write("No messages yet.")
-else:
-    for idx, item in enumerate(reversed(st.session_state["chat_history"]), start=1):
-        st.markdown(f"**Q{idx}:** {item['question']}")
-        st.markdown(f"**Evidence Query:** `{item['query_id']}`")
-        st.markdown(f"**A{idx}:** {item['answer']}")
-        st.caption("Evidence rows: " + str(item["evidence"].get("row_count", 0)))
-        st.divider()
+
+# ---------------------------------------------------------------------------
+# Header
+# ---------------------------------------------------------------------------
+
+st.title("Ask the Knowledge Graph")
+st.caption(
+    "Ask questions in plain English. The graph contains entities and relationships "
+    "extracted from NEA annual reports and sustainability reports."
+)
+
+# ---------------------------------------------------------------------------
+# Render existing messages
+# ---------------------------------------------------------------------------
+
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+        if msg["role"] == "assistant":
+            cypher = msg.get("cypher", "")
+            results = msg.get("results", [])
+            error = msg.get("error")
+
+            if error and not results:
+                st.error(f"Query error: {error}")
+
+            if cypher:
+                with st.expander("Cypher query", expanded=False):
+                    st.code(cypher, language="cypher")
+
+            if results:
+                with st.expander(f"Results ({len(results)} rows)", expanded=False):
+                    df = pd.DataFrame(results)
+                    st.dataframe(df, use_container_width=True)
+
+                    # Show evidence if present
+                    evidence_rows = [
+                        r for r in results
+                        if r.get("evidence") and str(r["evidence"]).strip()
+                    ]
+                    if evidence_rows:
+                        st.markdown("**Source evidence:**")
+                        for ev in evidence_rows[:10]:
+                            doc = ev.get("source_doc", ev.get("r.source_doc", ""))
+                            page = ev.get("source_page", ev.get("r.source_page", ""))
+                            text = ev.get("evidence", ev.get("r.evidence", ""))
+                            loc = f" — {doc} p.{page}" if doc else ""
+                            st.caption(f'"{text}"{loc}')
+
+
+# ---------------------------------------------------------------------------
+# Chat input
+# ---------------------------------------------------------------------------
+
+prefill = st.session_state.pop("_prefill", None)
+prompt = st.chat_input("Ask anything about NEA…") or prefill
+
+if prompt:
+    # Show user message
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    # Generate response
+    with st.chat_message("assistant"):
+        with st.spinner("Querying knowledge graph…"):
+            try:
+                engine = get_engine()
+                result = engine.ask(prompt, history=st.session_state.history)
+            except Exception as exc:
+                result = {
+                    "question": prompt,
+                    "cypher": "",
+                    "results": [],
+                    "answer": f"Something went wrong: {exc}",
+                    "error": str(exc),
+                }
+
+        answer  = result["answer"]
+        cypher  = result.get("cypher", "")
+        results = result.get("results", [])
+        error   = result.get("error")
+
+        st.markdown(answer)
+
+        if error and not results:
+            st.error(f"Query error: {error}")
+
+        if cypher:
+            with st.expander("Cypher query", expanded=False):
+                st.code(cypher, language="cypher")
+
+        if results:
+            with st.expander(f"Results ({len(results)} rows)", expanded=False):
+                df = pd.DataFrame(results)
+                st.dataframe(df, use_container_width=True)
+
+                evidence_rows = [
+                    r for r in results
+                    if r.get("evidence") and str(r["evidence"]).strip()
+                ]
+                if evidence_rows:
+                    st.markdown("**Source evidence:**")
+                    for ev in evidence_rows[:10]:
+                        doc = ev.get("source_doc", ev.get("r.source_doc", ""))
+                        page = ev.get("source_page", ev.get("r.source_page", ""))
+                        text = ev.get("evidence", ev.get("r.evidence", ""))
+                        loc = f" — {doc} p.{page}" if doc else ""
+                        st.caption(f'"{text}"{loc}')
+
+    # Persist to session state
+    st.session_state.messages.append({
+        "role":    "assistant",
+        "content": answer,
+        "cypher":  cypher,
+        "results": results,
+        "error":   error,
+    })
+    st.session_state.history.append({
+        "question": prompt,
+        "cypher":   cypher,
+        "answer":   answer,
+    })

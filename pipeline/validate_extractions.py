@@ -87,7 +87,7 @@ def _valid_triple(
         return False, f"invalid_predicate:{triple.get('predicate','')}"
 
     confidence = float(triple.get("confidence", 0.0))
-    if confidence < 0.7:
+    if confidence < 0.6:
         return False, "low_confidence"
 
     ok, reason = _valid_name(triple.get("subject"))

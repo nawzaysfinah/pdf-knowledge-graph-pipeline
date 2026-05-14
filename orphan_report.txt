@@ -1,0 +1,15 @@
+Orphan Chunk Analysis
+============================================================
+
+  Total orphan entity names in graph : 877
+  Chunks containing ≥1 orphan entity : 379
+    of which had 0 original triples  : 122
+    of which had some triples        : 257
+
+Top 10 source documents by orphan entity count:
+------------------------------------------------------------
+    462  nea-ar-fy22.pdf
+    413  nea-asr-fy23.pdf
+    353  nea-integrated-sustainability-report-2021-2022.pdf
+
+============================================================
