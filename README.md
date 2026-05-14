@@ -21,12 +21,15 @@ output/extractions/<doc_id>.json
      │
      ▼
 Stage 3 · Chunking              heading → paragraph boundaries, 1-2 sentence overlap
+     │                          short chunks (<300 chars) merged for LLM context
      │                          tables kept atomic
      ▼
 output/chunks.jsonl
      │
      ▼
-Stage 5 · LLM Triple Extraction Ollama (qwen3) + Agency ontology prompt
+Stage 5 · LLM Triple Extraction Ollama (qwen3:0.6b recommended) + compact ontology prompt
+     │                          /no_think directive for faster qwen3 inference
+     │                          entity pre-seeding from canonical_map
      │                          entities {name, type, aliases}
      │                          triples {subject, predicate, object, evidence, confidence}
      ▼
@@ -40,15 +43,15 @@ Stage 6 · Entity Resolution     sentence-transformers all-MiniLM-L6-v2
 output/canonical_map.json
      │
      ▼
-Stage 7 · Validation            confidence filter (< 0.7 dropped)
-     │                          ontology type-constraint check (violations flagged)
+Stage 7 · Validation            confidence filter (< 0.5 dropped)
+     │                          ontology type-constraint check (violations flagged, kept)
      ▼
 output/validated_triples.jsonl
 output/validation_report.txt
      │
      ▼
 Stage 8 · Neo4j Ingestion       MERGE nodes + relationships (idempotent)
-     │                          dual labels (:Entity:<Type>)
+     │                          dual labels (:Entity:<Type>), label/predicate sanitization
      ▼
 Neo4j  bolt://localhost:7687
      │
@@ -66,8 +69,11 @@ Stage 9 · Smoke Tests           degree centrality, relationship explorer,
 | Python | 3.10+ | |
 | Docker Desktop | any | for Neo4j |
 | Ollama | any | must be running locally |
-| Ollama model | `qwen3:latest` | `ollama pull qwen3:latest` |
+| Ollama model | `qwen3:0.6b` | `ollama pull qwen3:0.6b` — fastest for extraction |
 | Tesseract *(optional)* | any | only needed for scanned PDFs — `brew install tesseract` |
+
+> **Model choice:** `qwen3:0.6b` (500 MB) is recommended for speed on local hardware.
+> `qwen3:latest` (8B, 5 GB) produces higher quality but is ~30× slower without a GPU.
 
 ---
 
@@ -98,7 +104,7 @@ cp .env.example .env
 ```
 
 The defaults work out of the box if you use the Docker Neo4j setup below.
-Edit `.env` if your Neo4j credentials differ.
+Edit `.env` if your Neo4j credentials or Ollama model differ.
 
 ### 4 — Start Neo4j
 
@@ -131,28 +137,28 @@ cp /path/to/document.pdf pdfs/
 ### Run the full pipeline
 
 ```bash
-python -m pipeline.run_extract          # Stage 2 — extract text + tables
-python -m pipeline.run_chunk            # Stage 3 — chunk into semantic units
-python -m pipeline.run_extract_triples  # Stage 5 — LLM triple extraction
-python -m pipeline.run_resolve          # Stage 6 — entity resolution (interactive)
-python -m pipeline.run_validate         # Stage 7 — validate + filter triples
-python -m pipeline.run_ingest           # Stage 8 — write to Neo4j
-python -m pipeline.run_smoke_tests      # Stage 9 — verify graph
+.venv/bin/python -m pipeline.run_extract          # Stage 2 — extract text + tables
+.venv/bin/python -m pipeline.run_chunk            # Stage 3 — chunk into semantic units
+.venv/bin/python -m pipeline.run_extract_triples  # Stage 5 — LLM triple extraction
+echo "y" | .venv/bin/python -m pipeline.run_resolve  # Stage 6 — entity resolution
+.venv/bin/python -m pipeline.run_validate         # Stage 7 — validate + filter triples
+.venv/bin/python -m pipeline.run_ingest           # Stage 8 — write to Neo4j
+.venv/bin/python -m pipeline.run_smoke_tests      # Stage 9 — verify graph
 ```
 
-### One-liner (auto-confirms entity merges)
+> Remove `echo "y" |` from Stage 6 if you want to review proposed entity merges interactively.
+
+### Overnight / large-document runs
+
+For large PDF collections, use the watchdog script which prevents system sleep,
+auto-restarts Ollama if it crashes, and resumes extraction from the last checkpoint:
 
 ```bash
-python -m pipeline.run_extract          && \
-python -m pipeline.run_chunk            && \
-python -m pipeline.run_extract_triples  && \
-echo "y" | python -m pipeline.run_resolve && \
-python -m pipeline.run_validate         && \
-python -m pipeline.run_ingest           && \
-python -m pipeline.run_smoke_tests
+bash run_overnight.sh
 ```
 
-> Remove `echo "y" |` if you want to review proposed entity merges before applying them.
+The script logs progress to `output/overnight.log` and stops automatically when
+all chunks are processed.
 
 ### Re-run behaviour
 
@@ -200,7 +206,8 @@ To extend the ontology, edit `output/ontology.json` and re-run from Stage 5.
 │   ├── extractions.jsonl        # raw LLM triples (Stage 5)
 │   ├── canonical_map.json       # entity resolution map (Stage 6)
 │   ├── validated_triples.jsonl  # filtered + validated triples (Stage 7)
-│   └── validation_report.txt    # ontology violation audit (Stage 7)
+│   ├── validation_report.txt    # ontology violation audit (Stage 7)
+│   └── overnight.log            # watchdog run log (run_overnight.sh)
 │
 ├── pipeline/
 │   ├── validate_env.py          # Stage 1 — environment check
@@ -220,6 +227,7 @@ To extend the ontology, edit `output/ontology.json` and re-run from Stage 5.
 │   ├── smoke_tests.py           # Stage 9 — Cypher smoke queries
 │   └── run_smoke_tests.py       # Stage 9 — CLI runner
 │
+├── run_overnight.sh             # Overnight watchdog (sleep prevention + auto-restart)
 ├── src/                         # Streamlit Graph-RAG app (see below)
 ├── docker-compose.yml           # Neo4j 5.20 + APOC
 ├── requirements.txt             # Streamlit app dependencies
@@ -242,7 +250,7 @@ To extend the ontology, edit `output/ontology.json` and re-run from Stage 5.
 })
 ```
 
-Example: `(:Entity:GovernmentAgency {name: "the Agency", aliases: ["Agency"]})`
+Example: `(:Entity:GovernmentAgency {name: "National Environment Agency", aliases: ["NEA"]})`
 
 ### Relationships
 
@@ -262,8 +270,10 @@ Example: `(:Entity:GovernmentAgency {name: "the Agency", aliases: ["Agency"]})`
 ### Useful Cypher queries
 
 ```cypher
-// All entities
-MATCH (n:Entity) RETURN n.name, n.type ORDER BY n.type, n.name
+// Most connected entities
+MATCH (n:Entity)
+WITH n, size([(n)-[]-() | 1]) AS degree
+RETURN n.name, n.type, degree ORDER BY degree DESC LIMIT 20
 
 // All relationships with evidence
 MATCH (a:Entity)-[r]->(b:Entity)
@@ -275,10 +285,9 @@ MATCH (a:Entity)-[r]->(b:Entity)
 WHERE r.ontology_valid = false
 RETURN a.name, type(r), b.name, r.violation, r.source_doc
 
-// Most connected entities
-MATCH (n:Entity)
-WITH n, size([(n)-[]-() | 1]) AS degree
-RETURN n.name, n.type, degree ORDER BY degree DESC LIMIT 10
+// Subgraph around a specific entity
+MATCH p=(n:Entity {name: "National Environment Agency"})-[*1..2]-(m:Entity)
+RETURN p LIMIT 50
 ```
 
 ---
@@ -291,10 +300,13 @@ Ensure Ollama is running: `ollama serve` (or open the Ollama app).
 **`No PDFs found in pdfs/`**
 Copy PDFs with `cp`, not `cd`: `cp /path/to/file.pdf pdfs/`
 
+**Extraction is very slow**
+Switch to a smaller model. `qwen3:0.6b` runs ~30× faster than `qwen3:latest` on CPU.
+Update `OLLAMA_MODEL` in `.env` and restart extraction — already-processed chunks are skipped.
+
 **High violation rate in validation report**
-Expected on short/simple documents. The model performs better with longer,
-domain-rich PDF content. Violations are kept (not dropped) so you can review
-them and optionally extend the ontology.
+Expected with smaller models or short documents. Violations are kept (not dropped)
+so you can review and optionally extend the ontology.
 
 **Neo4j connection refused**
 Run `docker compose up -d` from the project root and wait ~15 seconds for
@@ -303,8 +315,6 @@ the container to fully start.
 **Scanned PDF produces no text**
 Install Tesseract: `brew install tesseract`, then
 `pip install pytesseract pdf2image`.
-
----
 
 ---
 

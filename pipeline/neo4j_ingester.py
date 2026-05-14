@@ -41,7 +41,10 @@ _SAFE_REL_RE = re.compile(r"[^a-zA-Z0-9_]")
 
 def _safe_rel_type(predicate: str) -> str:
     """Convert predicate to a valid Neo4j relationship type identifier."""
-    return _SAFE_REL_RE.sub("_", predicate).upper()
+    result = _SAFE_REL_RE.sub("_", predicate).upper()
+    if result and result[0].isdigit():
+        result = "REL_" + result
+    return result or "RELATED_TO"
 
 
 # ---------------------------------------------------------------------------
@@ -115,14 +118,23 @@ def _build_node_registry(
 # Ingestion
 # ---------------------------------------------------------------------------
 
+def _safe_label(entity_type: str) -> str:
+    """Sanitize entity type to a valid Neo4j label (alphanumeric + underscore only)."""
+    import re
+    label = re.sub(r"[^A-Za-z0-9_]", "_", entity_type)
+    if label and label[0].isdigit():
+        label = "T_" + label
+    return label or "Unknown"
+
+
 def _ingest_nodes(session: Any, registry: dict[str, dict[str, Any]]) -> int:
     count = 0
     for node in registry.values():
         entity_type = node["type"]
         aliases     = sorted(node["aliases"])
-        # Bake the specific type label into the query (safe: comes from controlled ontology vocab)
+        safe_type   = _safe_label(entity_type)
         cypher = (
-            f"MERGE (n:Entity:{entity_type} {{canonical_id: $cid}}) "
+            f"MERGE (n:Entity:{safe_type} {{canonical_id: $cid}}) "
             f"SET n.name = $name, n.type = $type, n.aliases = $aliases"
         )
         session.run(
