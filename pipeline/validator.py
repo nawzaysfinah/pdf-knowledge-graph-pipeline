@@ -23,11 +23,12 @@ from pipeline.entity_resolver import load_canonical_map
 
 logger = logging.getLogger(__name__)
 
-EXTRACTIONS_PATH       = Path("output") / "extractions.jsonl"
-CANONICAL_MAP_PATH     = Path("output") / "canonical_map.json"
-VALIDATED_PATH         = Path("output") / "validated_triples.jsonl"
-REPORT_PATH            = Path("output") / "validation_report.txt"
-ONTOLOGY_PATH          = Path("output") / "ontology.json"
+EXTRACTIONS_PATH           = Path("output") / "extractions.jsonl"
+VALIDATED_EXTRACTIONS_PATH = Path("output") / "validated_extractions.jsonl"
+CANONICAL_MAP_PATH         = Path("output") / "canonical_map.json"
+VALIDATED_PATH             = Path("output") / "validated_triples.jsonl"
+REPORT_PATH                = Path("output") / "validation_report.txt"
+ONTOLOGY_PATH              = Path("output") / "ontology.json"
 
 CONFIDENCE_THRESHOLD   = 0.5
 

@@ -292,6 +292,69 @@ RETURN p LIMIT 50
 
 ---
 
+## Extraction Quality Controls
+
+### Valid entity types
+
+The ontology enforces exactly 18 entity types. The LLM prompt and
+post-processing validation both reject any entity that does not use one of:
+
+`GovernmentAgency` · `Regulation` · `Policy` · `Programme` · `Pollutant` ·
+`WasteType` · `Facility` · `Organisation` · `Person` · `EnvironmentalIndicator` ·
+`ClimateEvent` · `GeographicArea` · `Standard` · `Technology` · `Disease` ·
+`Vector` · `DateOrPeriod` · `Metric`
+
+### Valid relationship predicates
+
+Exactly 20 predicates are accepted:
+
+`regulates` · `enforces` · `implements` · `operates` · `located_in` · `targets` ·
+`measures` · `set_target` · `emits` · `treats_or_processes` · `causes` ·
+`transmits` · `affects` · `collaborates_with` · `funded_by` · `succeeded_by` ·
+`complies_with` · `achieved_metric` · `occurred_during` · `headed_by`
+
+### Running the post-extraction cleaner (Stage 7a)
+
+```bash
+# Dry run — report only, no files written
+.venv/bin/python -m pipeline.validate_extractions --dry-run
+
+# Full run — writes output/validated_extractions.jsonl
+.venv/bin/python -m pipeline.validate_extractions
+```
+
+Stage 7 (`run_validate`) now runs this automatically before the confidence
+filter step, so you only need to call it manually for diagnostics.
+
+### Running Neo4j cleanup
+
+Open **http://localhost:7474**, paste and run each block from
+`neo4j_cleanup.cypher` independently:
+
+| Query | Effect |
+|---|---|
+| Q1 | Delete nodes with invalid entity types |
+| Q2 | Fix casing variants (`Organization` → `Organisation`, etc.) |
+| Q3 | Delete relationships with invented predicates |
+| Q4 | Delete noise nodes (short names, lowercase start, OCR artifacts) |
+| Q5a/5b | Merge NEA duplicate nodes (APOC or manual fallback) |
+| Q6 | Create performance indexes |
+| Q7a–7c | Verify cleanup results |
+
+### Known issues found and fixed
+
+| Issue | Fix |
+|---|---|
+| LLM inventing predicates outside ontology | Prompt rule 2 + `validate_extractions.py` triple filter |
+| LLM inventing entity types outside ontology | Prompt rule 1 + `validate_extractions.py` entity filter |
+| Entity names being full sentences | Prompt rule 3 (max 8 words, max 60 chars) + name validator |
+| Document boilerplate leaking as entities | Prompt rule 4 (skip TOC/headers/GRI blocks) + blocklist |
+| OCR artifacts as entity types | `validate_extractions.py` entity type filter + Q1 cleanup |
+| Spelling/casing duplicates | Q2 Cypher fix + entity resolver alias merge |
+| Neo4j labels crashing on special chars | `neo4j_ingester._safe_label()` sanitization |
+
+---
+
 ## Troubleshooting
 
 **`Ollama is not reachable`**

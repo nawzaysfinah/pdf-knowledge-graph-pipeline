@@ -72,13 +72,19 @@ def _build_prompt(ontology: Ontology, chunk_text: str, known_entities: str = "")
     return f"""/no_think
 Extract entities and relationships from the text. Return ONLY JSON, no explanation.
 
-ENTITY TYPES: {entity_types}
-PREDICATES: {predicates}
+ENTITY TYPES (use ONLY these exact values): {entity_types}
+PREDICATES (use ONLY these exact values): {predicates}
 {known_entities}
+STRICT RULES:
+1. `type` MUST be one of the exact ENTITY TYPES above. Never invent a new type. Skip entities that do not fit.
+2. `predicate` MUST be one of the exact PREDICATES above. Never invent a new predicate. Skip triples that do not fit.
+3. Entity `name` must be a proper noun or noun phrase: max 60 chars, starts with capital letter, max 8 words, no trailing period, not a pronoun or article alone, not boilerplate (page numbers, headers, footers, GRI references, URLs).
+4. Return empty arrays if the chunk is: table of contents, page header/footer, GRI content index, list of abbreviations, contact block, or signature block.
+5. Only include triples with confidence >= 0.7. Use confidence < 0.7 only for implied relationships (and skip those).
+6. Every entity referenced in a triple MUST also appear in the entities list.
+
 OUTPUT:
 {{"entities":[{{"name":"...","type":"...","aliases":[]}}],"triples":[{{"subject":"...","subject_type":"...","predicate":"...","object":"...","object_type":"...","evidence":"...","confidence":0.0}}]}}
-
-RULES: Extract every entity and relationship, including implied ones. Confidence: 1.0=explicit, 0.7=implied. Every triple entity must be in entities list.
 
 TEXT:
 {chunk_text}"""
