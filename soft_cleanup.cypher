@@ -88,6 +88,15 @@ LIMIT 50;
 
 
 // ------------------------------------------------------------
+// Query 0: Delete self-referential loops (safe to run anytime)
+// Removes relationships where a node points to itself.
+// elementId() is preferred over the deprecated id() in Neo4j 5.x
+// ------------------------------------------------------------
+MATCH (n)-[r]->(n)
+DELETE r;
+
+
+// ------------------------------------------------------------
 // Query 7: Flagged predicates with counts — decide what to keep
 // Some non-ontology predicates (LAUNCHED, SIGNED, ESTABLISHED)
 // may be worth keeping. Review here before selective_delete.

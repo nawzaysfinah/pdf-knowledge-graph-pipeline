@@ -120,6 +120,16 @@ DETACH DELETE dup;
 
 
 // ------------------------------------------------------------
+// Query 5c: Delete self-referential relationship loops
+// Removes any relationship where a node points to itself.
+// Safe to run anytime — idempotent, no nodes deleted.
+// Note: elementId() is preferred over deprecated id() in Neo4j 5.x
+// ------------------------------------------------------------
+MATCH (n)-[r]->(n)
+DELETE r;
+
+
+// ------------------------------------------------------------
 // Query 6: Add indexes for query performance
 // Creates range indexes on the most-queried properties.
 // IF NOT EXISTS makes this idempotent.

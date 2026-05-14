@@ -62,7 +62,7 @@ def build_query_registry() -> dict[str, QuerySpec]:
             parameter_schema={"limit": {"type": "integer", "default": 20, "min": 1, "max": 100}},
             cypher_template="""
                 MATCH (d1:Division)<-[:CREATED_BY]-(doc1:Document)-[:CAPTURES]->(l:Learning)<-[:CAPTURES]-(doc2:Document)-[:CREATED_BY]->(d2:Division)
-                WHERE id(d1) < id(d2)
+                WHERE elementId(d1) < elementId(d2)
                 WITH d1, d2, count(DISTINCT l) AS shared_learnings,
                      collect(DISTINCT l.text)[0..5] AS sample_learnings,
                      collect(DISTINCT doc1.doc_id)[0..5] + collect(DISTINCT doc2.doc_id)[0..5] AS doc_ids
