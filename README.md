@@ -1,10 +1,52 @@
-# Agency Knowledge Graph — PDF Extraction Pipeline
+# PDF → Knowledge Graph Pipeline
 
-End-to-end pipeline that extracts entities and relationships from Agency PDF
-documents and ingests them as a queryable knowledge graph in Neo4j.
+> Extract structured, queryable knowledge from unstructured PDF documents using a local LLM — no cloud APIs, no data leaving your machine.
 
-> The project also contains an earlier **Streamlit Graph-RAG app** (CSV-based,
-> Ollama-powered) documented at the [bottom of this file](#streamlit-graph-rag-app).
+![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)
+![Neo4j](https://img.shields.io/badge/Neo4j-5.20-008CC1?logo=neo4j&logoColor=white)
+![Ollama](https://img.shields.io/badge/Ollama-local_LLM-black)
+![License](https://img.shields.io/badge/license-MIT-green)
+
+---
+
+## The Problem
+
+Government agencies, law firms, research teams — anyone dealing with large document corpora — face the same problem: **the knowledge is in the PDFs, but it's not queryable**.
+
+You can keyword-search. You can ask an LLM to summarise. But you can't ask *"which regulations does this facility comply with, and which organisation enforces them?"* without someone manually building that map.
+
+This pipeline automates that map-building. Drop in PDFs; get back a graph database of entities and relationships you can query with Cypher, visualise in Neo4j Browser, or feed into a RAG system.
+
+---
+
+## What It Does
+
+```
+PDFs → Extract Text → Chunk → LLM Triple Extraction → Entity Resolution → Validate → Neo4j
+```
+
+Given a folder of PDF documents, the pipeline:
+
+1. **Extracts text** — handles both digital and scanned (OCR) PDFs
+2. **Chunks intelligently** — heading-aware boundaries, tables kept atomic, short chunks merged for LLM context
+3. **Extracts triples** — a local LLM identifies entities (e.g. `National Environment Agency`) and relationships (e.g. `regulates → air emissions`) as `(subject, predicate, object)` triples with evidence quotes
+4. **Resolves entities** — sentence-transformer embeddings + cosine similarity merge aliases (`NEA` = `National Environment Agency`)
+5. **Validates against an ontology** — 18 entity types and 20 predicates enforced; violations flagged but kept for review
+6. **Ingests idempotently** — MERGE operations mean you can safely re-run without duplicating data
+
+The result is a knowledge graph you can query:
+
+```cypher
+// Who is most connected in the document corpus?
+MATCH (n:Entity)
+WITH n, size([(n)-[]-() | 1]) AS degree
+RETURN n.name, n.type, degree ORDER BY degree DESC LIMIT 20
+
+// Trace a regulatory chain with evidence
+MATCH (a:Entity)-[r]->(b:Entity)
+RETURN a.name, type(r), b.name, r.evidence, r.confidence
+ORDER BY r.confidence DESC
+```
 
 ---
 
@@ -30,8 +72,7 @@ output/chunks.jsonl
 Stage 5 · LLM Triple Extraction Ollama (qwen3:0.6b recommended) + compact ontology prompt
      │                          /no_think directive for faster qwen3 inference
      │                          entity pre-seeding from canonical_map
-     │                          entities {name, type, aliases}
-     │                          triples {subject, predicate, object, evidence, confidence}
+     │
      ▼
 output/extractions.jsonl
      │
@@ -47,362 +88,195 @@ Stage 7 · Validation            confidence filter (< 0.5 dropped)
      │                          ontology type-constraint check (violations flagged, kept)
      ▼
 output/validated_triples.jsonl
-output/validation_report.txt
      │
      ▼
 Stage 8 · Neo4j Ingestion       MERGE nodes + relationships (idempotent)
-     │                          dual labels (:Entity:<Type>), label/predicate sanitization
+     │                          dual labels (:Entity:<Type>), label sanitization
      ▼
 Neo4j  bolt://localhost:7687
-     │
-     ▼
-Stage 9 · Smoke Tests           degree centrality, relationship explorer,
-                                duplicate entity detector
 ```
 
 ---
 
-## Prerequisites
+## Key Engineering Decisions
 
-| Requirement | Version | Notes |
-|---|---|---|
-| Python | 3.10+ | |
-| Docker Desktop | any | for Neo4j |
-| Ollama | any | must be running locally |
-| Ollama model | `qwen3:0.6b` | `ollama pull qwen3:0.6b` — fastest for extraction |
-| Tesseract *(optional)* | any | only needed for scanned PDFs — `brew install tesseract` |
+**Why a local LLM (Ollama) instead of the OpenAI/Claude API?**
+The target use case involves sensitive government documents. Keeping inference local means no data leaves the machine. `qwen3:0.6b` (500 MB) runs on CPU at reasonable speed; quality scales up if you have a GPU.
 
-> **Model choice:** `qwen3:0.6b` (500 MB) is recommended for speed on local hardware.
-> `qwen3:latest` (8B, 5 GB) produces higher quality but is ~30× slower without a GPU.
+**Why Neo4j instead of a vector database?**
+Vector databases are great for semantic similarity ("find me similar chunks"). Graph databases are great for relationship traversal ("trace the chain from a pollutant to the regulation that controls it"). This pipeline is optimised for the latter — multi-hop queries that would require many RAG round-trips become single Cypher queries.
+
+**Why a fixed ontology (18 types, 20 predicates) instead of open extraction?**
+Open extraction produces inconsistent predicates (`employs`, `has_employee`, `hired`) that can't be reliably queried. A compact ontology forces the LLM to normalise, at the cost of some recall. The validation stage flags violations rather than dropping them, so you can extend the ontology when you find legitimate gaps.
+
+**Why idempotent ingestion (MERGE)?**
+Large document sets can take hours to process. The pipeline checkpoints after every stage so you can kill it, fix a config, and resume without reprocessing. This also means you can incrementally add documents to an existing graph.
 
 ---
 
-## Setup
+## Challenges Solved
 
-### 1 — Clone and create virtual environment
+| Problem | Solution |
+|---|---|
+| LLM inventing entity types outside the ontology | Prompt constraint + `validate_extractions.py` type filter |
+| Entity aliases (`NEA` ≠ `National Environment Agency`) bloating the graph | Sentence-transformer cosine similarity merge at Stage 6 |
+| Scanned PDFs with no digital text layer | Tesseract OCR fallback via `pytesseract` + `pdf2image` |
+| Long overnight runs crashing due to Ollama OOM | `run_overnight.sh` watchdog — auto-restarts Ollama, resumes from last checkpoint |
+| Neo4j labels crashing on special characters in entity names | `_safe_label()` sanitization before ingestion |
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| PDF extraction | `pymupdf4llm`, `pdfplumber`, `pytesseract` |
+| LLM inference | Ollama (`qwen3:0.6b` recommended) |
+| Entity resolution | `sentence-transformers` (`all-MiniLM-L6-v2`) |
+| Graph database | Neo4j 5.20 + APOC (Docker) |
+| Graph queries | Cypher |
+| Orchestration | Python 3.10+, Shell |
+
+---
+
+## Quickstart
+
+### Prerequisites
+
+| Requirement | Notes |
+|---|---|
+| Python 3.10+ | |
+| Docker Desktop | for Neo4j |
+| Ollama | must be running locally (`ollama serve`) |
+| `qwen3:0.6b` model | `ollama pull qwen3:0.6b` — fastest on CPU |
+| Tesseract *(optional)* | `brew install tesseract` — only for scanned PDFs |
+
+### Setup
 
 ```bash
-cd <repo-folder>
-python -m venv .venv
-source .venv/bin/activate
-```
+# 1. Clone and create virtual environment
+git clone https://github.com/nawzaysfinah/pdf-knowledge-graph-pipeline.git
+cd pdf-knowledge-graph-pipeline
+python -m venv .venv && source .venv/bin/activate
 
-### 2 — Install dependencies
-
-```bash
-# Streamlit app (original)
-pip install -r requirements.txt
-
-# PDF pipeline (new)
+# 2. Install dependencies
 pip install -r requirements-pipeline.txt
-```
 
-### 3 — Configure environment
+# 3. Configure environment
+cp .env.example .env          # defaults work out of the box
 
-```bash
-cp .env.example .env
-```
+# 4. Start Neo4j
+docker compose up -d           # available at http://localhost:7474
 
-The defaults work out of the box if you use the Docker Neo4j setup below.
-Edit `.env` if your Neo4j credentials or Ollama model differ.
-
-### 4 — Start Neo4j
-
-```bash
-docker compose up -d
-```
-
-Neo4j will be available at:
-- **Bolt** `bolt://localhost:7687`
-- **Browser** `http://localhost:7474`  (login: `neo4j` / `changeme`)
-
-### 5 — Validate environment
-
-```bash
+# 5. Validate environment
 python -m pipeline.validate_env
 ```
 
-All imports and credentials should show `[OK]`.
-
----
-
-## Processing PDFs
-
-### Add PDFs
+### Run the pipeline
 
 ```bash
-cp /path/to/document.pdf pdfs/
-```
+# Drop your PDFs in
+cp /path/to/your/documents/*.pdf pdfs/
 
-### Run the full pipeline
+# Run all stages
+python -m pipeline.run_extract          # Stage 2 — extract text + tables
+python -m pipeline.run_chunk            # Stage 3 — chunk into semantic units
+python -m pipeline.run_extract_triples  # Stage 5 — LLM triple extraction
+echo "y" | python -m pipeline.run_resolve  # Stage 6 — entity resolution
+python -m pipeline.run_validate         # Stage 7 — validate + filter
+python -m pipeline.run_ingest           # Stage 8 — write to Neo4j
+python -m pipeline.run_smoke_tests      # Stage 9 — verify graph
 
-```bash
-.venv/bin/python -m pipeline.run_extract          # Stage 2 — extract text + tables
-.venv/bin/python -m pipeline.run_chunk            # Stage 3 — chunk into semantic units
-.venv/bin/python -m pipeline.run_extract_triples  # Stage 5 — LLM triple extraction
-echo "y" | .venv/bin/python -m pipeline.run_resolve  # Stage 6 — entity resolution
-.venv/bin/python -m pipeline.run_validate         # Stage 7 — validate + filter triples
-.venv/bin/python -m pipeline.run_ingest           # Stage 8 — write to Neo4j
-.venv/bin/python -m pipeline.run_smoke_tests      # Stage 9 — verify graph
-```
-
-> Remove `echo "y" |` from Stage 6 if you want to review proposed entity merges interactively.
-
-### Overnight / large-document runs
-
-For large PDF collections, use the watchdog script which prevents system sleep,
-auto-restarts Ollama if it crashes, and resumes extraction from the last checkpoint:
-
-```bash
+# For large collections (overnight run with auto-resume)
 bash run_overnight.sh
 ```
 
-The script logs progress to `output/overnight.log` and stops automatically when
-all chunks are processed.
-
 ### Re-run behaviour
+
+Each stage checkpoints its output — re-running skips already-processed items:
 
 | Stage | On re-run |
 |---|---|
-| Extract (2) | Skips PDFs with unchanged checksum |
-| Chunk (3) | Skips doc_ids already in `chunks.jsonl` |
-| LLM Triples (5) | Skips chunk_ids already in `extractions.jsonl` |
-| Resolve (6) | Re-clusters all entities; shows updated merge proposals |
-| Validate (7) | Always rewrites `validated_triples.jsonl` fully |
-| Ingest (8) | Always safe — `MERGE` is idempotent |
+| Extract | Skips PDFs with unchanged checksum |
+| Chunk | Skips doc_ids already in `chunks.jsonl` |
+| LLM Triples | Skips chunk_ids already in `extractions.jsonl` |
+| Ingest | Always safe — `MERGE` is idempotent |
 
 ---
 
-## Ontology
+## Domain Ontology
 
-The Agency domain ontology lives at `output/ontology.json` and defines:
+The default ontology targets environmental/regulatory documents (NEA Singapore context) but is fully customisable at `output/ontology.json`.
 
-- **18 entity types** — `GovernmentAgency`, `Regulation`, `Policy`, `Programme`,
-  `Pollutant`, `WasteType`, `Facility`, `Organisation`, `Person`,
-  `EnvironmentalIndicator`, `ClimateEvent`, `GeographicArea`, `Standard`,
-  `Technology`, `Disease`, `Vector`, `DateOrPeriod`, `Metric`
+**18 entity types:** `GovernmentAgency` · `Regulation` · `Policy` · `Programme` · `Pollutant` · `WasteType` · `Facility` · `Organisation` · `Person` · `EnvironmentalIndicator` · `ClimateEvent` · `GeographicArea` · `Standard` · `Technology` · `Disease` · `Vector` · `DateOrPeriod` · `Metric`
 
-- **20 relationship predicates** — `regulates`, `enforces`, `implements`,
-  `operates`, `located_in`, `targets`, `measures`, `set_target`, `emits`,
-  `treats_or_processes`, `causes`, `transmits`, `affects`, `collaborates_with`,
-  `funded_by`, `succeeded_by`, `complies_with`, `achieved_metric`,
-  `occurred_during`, `headed_by`
+**20 relationship predicates:** `regulates` · `enforces` · `implements` · `operates` · `located_in` · `targets` · `measures` · `set_target` · `emits` · `treats_or_processes` · `causes` · `transmits` · `affects` · `collaborates_with` · `funded_by` · `succeeded_by` · `complies_with` · `achieved_metric` · `occurred_during` · `headed_by`
 
-To extend the ontology, edit `output/ontology.json` and re-run from Stage 5.
+To adapt to a new domain, edit `output/ontology.json` and re-run from Stage 5.
+
+---
+
+## Graph Schema
+
+```
+(:Entity:<EntityType> {
+    canonical_id,   // stable hash, merge key
+    name,           // canonical display name
+    aliases         // surface forms that resolved here
+})
+
+(subject)-[:<PREDICATE> {
+    confidence,     // 0.0–1.0 from LLM
+    evidence,       // verbatim quote ≤20 words from source
+    source_doc,     // filename
+    source_page,    // page number
+    ontology_valid  // false = flagged for review
+}]->(object)
+```
 
 ---
 
 ## Project Structure
 
 ```
-<repo-folder>/
-│
+pdf-knowledge-graph-pipeline/
 ├── pdfs/                        # ← drop your PDFs here
-│
 ├── output/
 │   ├── extractions/             # one JSON per PDF (Stage 2)
 │   ├── chunks.jsonl             # all chunks with provenance (Stage 3)
-│   ├── ontology.json            # Agency domain ontology (Stage 4)
+│   ├── ontology.json            # domain ontology (Stage 4)
 │   ├── extractions.jsonl        # raw LLM triples (Stage 5)
 │   ├── canonical_map.json       # entity resolution map (Stage 6)
-│   ├── validated_triples.jsonl  # filtered + validated triples (Stage 7)
-│   ├── validation_report.txt    # ontology violation audit (Stage 7)
-│   └── overnight.log            # watchdog run log (run_overnight.sh)
-│
-├── pipeline/
-│   ├── validate_env.py          # Stage 1 — environment check
-│   ├── pdf_extractor.py         # Stage 2 — PDF extraction logic
-│   ├── run_extract.py           # Stage 2 — CLI runner
-│   ├── chunker.py               # Stage 3 — chunking logic
-│   ├── run_chunk.py             # Stage 3 — CLI runner
-│   ├── ontology.py              # Stage 4 — ontology loader + validator
-│   ├── triple_extractor.py      # Stage 5 — LLM extraction logic
-│   ├── run_extract_triples.py   # Stage 5 — CLI runner
-│   ├── entity_resolver.py       # Stage 6 — entity resolution logic
-│   ├── run_resolve.py           # Stage 6 — CLI runner (interactive)
-│   ├── validator.py             # Stage 7 — validation + filtering logic
-│   ├── run_validate.py          # Stage 7 — CLI runner
-│   ├── neo4j_ingester.py        # Stage 8 — Neo4j ingestion logic
-│   ├── run_ingest.py            # Stage 8 — CLI runner
-│   ├── smoke_tests.py           # Stage 9 — Cypher smoke queries
-│   └── run_smoke_tests.py       # Stage 9 — CLI runner
-│
-├── run_overnight.sh             # Overnight watchdog (sleep prevention + auto-restart)
-├── src/                         # Streamlit Graph-RAG app (see below)
+│   ├── validated_triples.jsonl  # filtered triples (Stage 7)
+│   └── validation_report.txt    # ontology violation audit (Stage 7)
+├── pipeline/                    # stage modules + CLI runners
+├── src/                         # Streamlit Graph-RAG app (original PoC)
+├── run_overnight.sh             # watchdog for large collections
 ├── docker-compose.yml           # Neo4j 5.20 + APOC
-├── requirements.txt             # Streamlit app dependencies
-├── requirements-pipeline.txt    # PDF pipeline dependencies
 └── .env.example                 # credential template
 ```
 
 ---
 
-## Neo4j Graph Model
-
-### Nodes
-
-```
-(:Entity:<EntityType> {
-    canonical_id,   // stable hash id, merge key
-    name,           // canonical display name
-    type,           // entity type string
-    aliases         // list of surface forms that resolved here
-})
-```
-
-Example: `(:Entity:GovernmentAgency {name: "National Environment Agency", aliases: ["NEA"]})`
-
-### Relationships
-
-```
-(subject)-[:<PREDICATE> {
-    predicate,      // original ontology predicate name
-    confidence,     // 0.0–1.0 from LLM
-    evidence,       // verbatim quote ≤20 words from source text
-    source_doc,     // filename
-    source_page,    // page number
-    chunk_id,       // traceability to source chunk
-    ontology_valid, // boolean — false = violation flagged for review
-    violation       // violation description if ontology_valid = false
-}]->(object)
-```
-
-### Useful Cypher queries
-
-```cypher
-// Most connected entities
-MATCH (n:Entity)
-WITH n, size([(n)-[]-() | 1]) AS degree
-RETURN n.name, n.type, degree ORDER BY degree DESC LIMIT 20
-
-// All relationships with evidence
-MATCH (a:Entity)-[r]->(b:Entity)
-RETURN a.name, type(r), b.name, r.evidence, r.confidence
-ORDER BY r.confidence DESC
-
-// Ontology violations to review
-MATCH (a:Entity)-[r]->(b:Entity)
-WHERE r.ontology_valid = false
-RETURN a.name, type(r), b.name, r.violation, r.source_doc
-
-// Subgraph around a specific entity
-MATCH p=(n:Entity {name: "National Environment Agency"})-[*1..2]-(m:Entity)
-RETURN p LIMIT 50
-```
-
----
-
-## Extraction Quality Controls
-
-### Valid entity types
-
-The ontology enforces exactly 18 entity types. The LLM prompt and
-post-processing validation both reject any entity that does not use one of:
-
-`GovernmentAgency` · `Regulation` · `Policy` · `Programme` · `Pollutant` ·
-`WasteType` · `Facility` · `Organisation` · `Person` · `EnvironmentalIndicator` ·
-`ClimateEvent` · `GeographicArea` · `Standard` · `Technology` · `Disease` ·
-`Vector` · `DateOrPeriod` · `Metric`
-
-### Valid relationship predicates
-
-Exactly 20 predicates are accepted:
-
-`regulates` · `enforces` · `implements` · `operates` · `located_in` · `targets` ·
-`measures` · `set_target` · `emits` · `treats_or_processes` · `causes` ·
-`transmits` · `affects` · `collaborates_with` · `funded_by` · `succeeded_by` ·
-`complies_with` · `achieved_metric` · `occurred_during` · `headed_by`
-
-### Running the post-extraction cleaner (Stage 7a)
-
-```bash
-# Dry run — report only, no files written
-.venv/bin/python -m pipeline.validate_extractions --dry-run
-
-# Full run — writes output/validated_extractions.jsonl
-.venv/bin/python -m pipeline.validate_extractions
-```
-
-Stage 7 (`run_validate`) now runs this automatically before the confidence
-filter step, so you only need to call it manually for diagnostics.
-
-### Running Neo4j cleanup
-
-Open **http://localhost:7474**, paste and run each block from
-`neo4j_cleanup.cypher` independently:
-
-| Query | Effect |
-|---|---|
-| Q1 | Delete nodes with invalid entity types |
-| Q2 | Fix casing variants (`Organization` → `Organisation`, etc.) |
-| Q3 | Delete relationships with invented predicates |
-| Q4 | Delete noise nodes (short names, lowercase start, OCR artifacts) |
-| Q5a/5b | Merge NEA duplicate nodes (APOC or manual fallback) |
-| Q6 | Create performance indexes |
-| Q7a–7c | Verify cleanup results |
-
-### Known issues found and fixed
-
-| Issue | Fix |
-|---|---|
-| LLM inventing predicates outside ontology | Prompt rule 2 + `validate_extractions.py` triple filter |
-| LLM inventing entity types outside ontology | Prompt rule 1 + `validate_extractions.py` entity filter |
-| Entity names being full sentences | Prompt rule 3 (max 8 words, max 60 chars) + name validator |
-| Document boilerplate leaking as entities | Prompt rule 4 (skip TOC/headers/GRI blocks) + blocklist |
-| OCR artifacts as entity types | `validate_extractions.py` entity type filter + Q1 cleanup |
-| Spelling/casing duplicates | Q2 Cypher fix + entity resolver alias merge |
-| Neo4j labels crashing on special chars | `neo4j_ingester._safe_label()` sanitization |
-
----
-
 ## Troubleshooting
 
-**`Ollama is not reachable`**
-Ensure Ollama is running: `ollama serve` (or open the Ollama app).
+**`Ollama is not reachable`** — Run `ollama serve` or open the Ollama app.
 
-**`No PDFs found in pdfs/`**
-Copy PDFs with `cp`, not `cd`: `cp /path/to/file.pdf pdfs/`
+**Extraction is slow** — Switch to `qwen3:0.6b` in `.env`. Already-processed chunks are skipped automatically.
 
-**Extraction is very slow**
-Switch to a smaller model. `qwen3:0.6b` runs ~30× faster than `qwen3:latest` on CPU.
-Update `OLLAMA_MODEL` in `.env` and restart extraction — already-processed chunks are skipped.
+**High violation rate in validation report** — Expected with smaller models. Violations are kept (not dropped) so you can review and extend the ontology.
 
-**High violation rate in validation report**
-Expected with smaller models or short documents. Violations are kept (not dropped)
-so you can review and optionally extend the ontology.
+**Neo4j connection refused** — Run `docker compose up -d` and wait ~15 seconds.
 
-**Neo4j connection refused**
-Run `docker compose up -d` from the project root and wait ~15 seconds for
-the container to fully start.
-
-**Scanned PDF produces no text**
-Install Tesseract: `brew install tesseract`, then
-`pip install pytesseract pdf2image`.
+**Scanned PDF produces no text** — Install Tesseract: `brew install tesseract && pip install pytesseract pdf2image`.
 
 ---
 
-## Streamlit Graph-RAG App
+## Related Projects
 
-The original PoC for CSV-based ingestion with a human review queue and
-evidence-first Graph-RAG chat.
+- [`local-pdf-rag`](https://github.com/nawzaysfinah/local-pdf-rag) — simpler local RAG without the graph layer; better for Q&A over a small document set
+- [`build-llm-apps`](https://github.com/nawzaysfinah/build-llm-apps) — beginner guide to building LLM apps, covering RAG fundamentals
 
-### Run
+---
 
-```bash
-streamlit run src/app.py
-```
-
-### Architecture
-
-```
-Raw CSVs (data/raw) + mapping_config.yaml
-        → Canonicalization (src/io)
-        → Neo4j Loader (src/graph/loader.py)
-        → Triple Extraction (Ollama, src/llm/extract_triples.py)
-        → Review Queue (SQLite)
-        → Neo4j
-        → Dashboard / Explorer / Ask / Report (Streamlit)
-```
-
-See `neo4j/schema.md` for the CSV pipeline graph schema.
-Sample data is provided under `data/sample/` (30 docs, 3 divisions, 6 initiatives).
+*Built by [Syaz](https://syaz.super.site) — AI Lecturer @ ITE College West, Singapore*
